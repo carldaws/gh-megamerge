@@ -24,7 +24,7 @@ Usage:
 <target> is the slug, the target branch, or the target PR's number.
 
 Per-repo config (git config):
-  megamerge.branchPrefix  target branch prefix, so targets are <prefix><slug> (default: megamerge/)
+  megamerge.branchPrefix  target branch prefix, so targets are <prefix>/<slug> (default: megamerge)
   megamerge.addLabels     comma-separated labels applied to each source PR on add
   megamerge.targetLabels  comma-separated labels applied to the target PR on init
 
@@ -41,7 +41,9 @@ is_number() {
 }
 
 branch_prefix() {
-  git config --get megamerge.branchPrefix || echo megamerge/
+  local p
+  p=$(git config --get megamerge.branchPrefix || echo megamerge)
+  printf '%s/' "${p%/}"
 }
 
 resolve_target() {

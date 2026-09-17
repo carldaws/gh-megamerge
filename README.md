@@ -70,7 +70,7 @@ error, not an incident.
 ## Per-repo config
 
 ```sh
-git config megamerge.branchPrefix "alice/mm-"    # target branches become alice/mm-<slug> (default: megamerge/)
+git config megamerge.branchPrefix "alice/mm"     # target branches become alice/mm/<slug> (default: megamerge)
 git config megamerge.addLabels "skip-preview"    # applied to each source PR on add
 git config megamerge.targetLabels "keep-data"    # applied to the target PR on init
 ```
@@ -85,7 +85,7 @@ deployment as long-lived.
 
 ## Conventions
 
-- The target branch is `<prefix><slug>` (default prefix `megamerge/`); never
+- The target branch is `<prefix>/<slug>` (default prefix `megamerge`); never
   commit to it or merge its PR.
 - A branch must be pushed, with an open PR, before it can become a source.
 - Where someone is watching a deploy of the target, add sources when they are

@@ -36,8 +36,10 @@ branch() {
 }
 
 check "branch prefix defaults to megamerge/" "$(branch_prefix)" "megamerge/"
-git config megamerge.branchPrefix "alice/mm-"
-check "branch prefix honours git config" "$(branch_prefix)" "alice/mm-"
+git config megamerge.branchPrefix "alice/mm"
+check "branch prefix honours git config" "$(branch_prefix)" "alice/mm/"
+git config megamerge.branchPrefix "alice/mm/"
+check "a trailing slash in config is not doubled" "$(branch_prefix)" "alice/mm/"
 git config --unset megamerge.branchPrefix
 
 B1=$(branch b1 f1.txt one)
