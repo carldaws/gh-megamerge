@@ -13,7 +13,7 @@ usage() {
 gh megamerge - keep one target branch merged from many source branches
 
 Usage:
-  gh megamerge init <slug> [--base <branch>]   create megamerge/<slug> and its draft target PR
+  gh megamerge init <slug> [--base <branch>]   create the target branch and its draft target PR
   gh megamerge <target>                        sync: rebuild the target from base + open sources
   gh megamerge <target> add [<branch|pr>]      add a source (default: current branch), then sync
   gh megamerge <target> remove <branch|pr>     remove a source, then sync
@@ -21,9 +21,10 @@ Usage:
   gh megamerge <target> sync [--dry-run]       explicit sync; --dry-run composes but pushes nothing
   gh megamerge <target> close [--force]        close the target PR and delete its branch
 
-<target> is the slug, the megamerge/<slug> branch, or the target PR's number.
+<target> is the slug, the target branch, or the target PR's number.
 
 Per-repo config (git config):
+  megamerge.branchPrefix  target branch prefix, so targets are <prefix><slug> (default: megamerge/)
   megamerge.addLabels     comma-separated labels applied to each source PR on add
   megamerge.targetLabels  comma-separated labels applied to the target PR on init
 
@@ -39,15 +40,20 @@ is_number() {
   esac
 }
 
+branch_prefix() {
+  git config --get megamerge.branchPrefix || echo megamerge/
+}
+
 resolve_target() {
-  local target=$1 num tsv _draft _state
+  local target=$1 num tsv _draft _state prefix
+  prefix=$(branch_prefix)
   if is_number "$target"; then
     num=$target
   else
     local branch=$target
     case $branch in
-      megamerge/*) ;;
-      *) branch="megamerge/$branch" ;;
+      "$prefix"*) ;;
+      *) branch="$prefix$branch" ;;
     esac
     num=$(gh pr list --head "$branch" --state open --json number \
       -q 'if length==0 then empty else .[0].number end')
@@ -64,7 +70,7 @@ resolve_target() {
     die "PR #$num has no megamerge block - not a megamerge target (create one with 'gh megamerge init')"
   printf '%s\n' "$BODY" | grep -qxF "$MARKER_END" ||
     die "PR #$num's megamerge block has no end marker - restore it before continuing"
-  SLUG=${TARGET_BRANCH#megamerge/}
+  SLUG=${TARGET_BRANCH#"$prefix"}
 }
 
 block_lines() {
@@ -479,7 +485,8 @@ cmd_init() {
   case $slug in
     *[!A-Za-z0-9._-]*) die "slug may only contain letters, digits, dot, dash, underscore" ;;
   esac
-  local branch="megamerge/$slug"
+  local branch
+  branch="$(branch_prefix)$slug"
   git fetch origin --quiet
   if git rev-parse --quiet --verify "origin/$branch" >/dev/null; then
     die "origin/$branch already exists"

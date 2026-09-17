@@ -70,9 +70,13 @@ error, not an incident.
 ## Per-repo config
 
 ```sh
+git config megamerge.branchPrefix "alice/mm-"    # target branches become alice/mm-<slug> (default: megamerge/)
 git config megamerge.addLabels "skip-preview"    # applied to each source PR on add
 git config megamerge.targetLabels "keep-data"    # applied to the target PR on init
 ```
+
+The prefix is for repos with a branch-naming convention the default would
+fight; set it before `init` and every command resolves slugs against it.
 
 Both are comma-separated label lists, useful where PR labels steer a deploy
 pipeline — for example, suppressing per-source preview deploys so a project
@@ -81,7 +85,8 @@ deployment as long-lived.
 
 ## Conventions
 
-- The target branch is `megamerge/<slug>`; never commit to it or merge its PR.
+- The target branch is `<prefix><slug>` (default prefix `megamerge/`); never
+  commit to it or merge its PR.
 - A branch must be pushed, with an open PR, before it can become a source.
 - Where someone is watching a deploy of the target, add sources when they are
   ready for review, so nobody sees work mid-construction.

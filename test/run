@@ -35,6 +35,11 @@ branch() {
   git rev-parse HEAD
 }
 
+check "branch prefix defaults to megamerge/" "$(branch_prefix)" "megamerge/"
+git config megamerge.branchPrefix "alice/mm-"
+check "branch prefix honours git config" "$(branch_prefix)" "alice/mm-"
+git config --unset megamerge.branchPrefix
+
 B1=$(branch b1 f1.txt one)
 B2=$(branch b2 f2.txt two)
 B3=$(branch b3 f3.txt three "$B1")
