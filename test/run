@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+set -e -o pipefail
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+
+export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@test
+export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@test
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
+
+MEGAMERGE_LIB=1 . "$ROOT/gh-megamerge"
+
+pass=0 fail=0
+ok() { pass=$((pass + 1)); echo "ok   $1"; }
+bad() { fail=$((fail + 1)); echo "FAIL $1"; }
+check() {
+  if [ "$2" = "$3" ]; then ok "$1"; else bad "$1: want '$3', got '$2'"; fi
+}
+
+cd "$TMP"
+git init -q repo
+cd repo
+echo one >a.txt
+echo shared >s.txt
+git add .
+git commit -qm base
+BASE_SHA=$(git rev-parse HEAD)
+
+layer() {
+  git checkout -q -b "$1" "${4:-$BASE_SHA}"
+  echo "$3" >"$2"
+  git add .
+  git commit -qm "$1"
+  git rev-parse HEAD
+}
+
+L1=$(layer l1 f1.txt one)
+L2=$(layer l2 f2.txt two)
+L3=$(layer l3 f3.txt three "$L1")
+C1=$(layer c1 s.txt alpha)
+C2=$(layer c2 s.txt beta)
+
+final=$(compose_layers "$BASE_SHA" "l1=$L1" "l2=$L2")
+check "compose merges two independent layers" \
+  "$(git ls-tree --name-only "$final" | tr '\n' ' ')" \
+  "a.txt f1.txt f2.txt s.txt "
+check "compose parents are base plus both tips" \
+  "$(git rev-list --parents -n1 "$final" | cut -d' ' -f2-)" \
+  "$BASE_SHA $L1 $L2"
+check "compose commit message names the layers" \
+  "$(git log -1 --format=%s "$final")" \
+  "megamerge: base + l1, l2"
+
+again=$(compose_layers "$BASE_SHA" "l1=$L1" "l2=$L2")
+check "compose is deterministic on the tree" \
+  "$(git rev-parse "$again^{tree}")" "$(git rev-parse "$final^{tree}")"
+
+stacked=$(compose_layers "$BASE_SHA" "l3=$L3" "l2=$L2")
+check "a stacked tip brings its parent's changes" \
+  "$(git ls-tree --name-only "$stacked" | tr '\n' ' ')" \
+  "a.txt f1.txt f2.txt f3.txt s.txt "
+
+if out=$(compose_layers "$BASE_SHA" "c1=$C1" "c2=$C2" 2>&1 >/dev/null); then
+  bad "conflicting layers are refused"
+else
+  ok "conflicting layers are refused"
+  case $out in
+    *"conflict merging c2"*s.txt*) ok "conflict report names the layer and file" ;;
+    *) bad "conflict report names the layer and file: got '$out'" ;;
+  esac
+fi
+
+empty=$(compose_layers "$BASE_SHA")
+check "no layers composes to the base tree" \
+  "$(git rev-parse "$empty^{tree}")" "$(git rev-parse "$BASE_SHA^{tree}")"
+check "no layers still commits on top of base" \
+  "$(git rev-list --parents -n1 "$empty" | cut -d' ' -f2-)" "$BASE_SHA"
+
+lines=$(printf 'l1\t%s\t10\tmain\nl3\t%s\t11\tl1\n' "$L1" "$L3")
+check "filter drops a layer contained in another" \
+  "$(filter_layers "$BASE_SHA" "$lines" 2>/dev/null | cut -f1 | tr '\n' ' ')" \
+  "l3 "
+
+lines=$(printf 'noop\t%s\t12\tmain\n' "$BASE_SHA")
+check "filter drops a layer already in base" \
+  "$(filter_layers "$BASE_SHA" "$lines" 2>/dev/null)" ""
+
+lines=$(printf 'l1\t%s\t10\tmain\nl2\t%s\t13\tmain\n' "$L1" "$L2")
+check "filter keeps independent layers" \
+  "$(filter_layers "$BASE_SHA" "$lines" 2>/dev/null | cut -f1 | tr '\n' ' ')" \
+  "l1 l2 "
+
+BASE=main
+git update-ref refs/remotes/origin/l1 "$L1"
+lines=$(printf 'l1\t%s\t10\tmain\nl3\t%s\t11\tl1\n' "$L1" "$L3")
+if (check_stacks "$lines") 2>/dev/null; then
+  ok "a fresh stack passes the stale check"
+else
+  bad "a fresh stack passes the stale check"
+fi
+
+L1B=$(layer l1b f1.txt one-reworked)
+git update-ref refs/remotes/origin/l1 "$L1B"
+if out=$( (check_stacks "$lines") 2>&1); then
+  bad "a reworked parent fails the stale check"
+else
+  case $out in
+    *"stale stack: l3"*) ok "a reworked parent fails the stale check" ;;
+    *) bad "a reworked parent fails the stale check: got '$out'" ;;
+  esac
+fi
+
+BODY="above the block
+$MARKER_START
+### Layers
+
+- \`carldaws/one\` (#101)
+- \`carldaws/two\` (#102)
+
+Composed by [gh-megamerge](url): \`main\` plus the layers above.
+$MARKER_END
+below the block"
+check "layers parse out of the body block" \
+  "$(layers_from_body | tr '\n' ' ')" \
+  "carldaws/one carldaws/two "
+
+SLUG=demo
+block=$(render_block "carldaws/three=103")
+expected="above the block
+$block
+below the block"
+got=$(printf '%s\n' "$BODY" | MEGAMERGE_BLOCK="$block" awk -v s="$MARKER_START" -v e="$MARKER_END" '
+  $0==s {print ENVIRON["MEGAMERGE_BLOCK"]; skip=1; next}
+  $0==e {skip=0; next}
+  skip!=1 {print}
+')
+check "block rewrite preserves surrounding body text" "$got" "$expected"
+BODY=$got
+check "rewritten block lists the new layer" \
+  "$(layers_from_body | tr '\n' ' ')" "carldaws/three "
+
+echo
+echo "$pass passed, $fail failed"
+[ "$fail" -eq 0 ]
