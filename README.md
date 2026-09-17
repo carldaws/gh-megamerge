@@ -25,20 +25,73 @@ gh alias set mm megamerge   # optional: gh mm <slug> ...
 
 Requires git ≥ 2.38 (`merge-tree --write-tree`).
 
-## Usage
+## Walkthrough
+
+**1. Start a project.**
 
 ```sh
-gh megamerge init dark-mode        # creates megamerge/dark-mode + its draft target PR
-gh megamerge dark-mode add         # current branch becomes a source, then syncs
-gh megamerge dark-mode             # sync: rebuild the target from base + open sources
-gh megamerge dark-mode status      # sources, their PRs, target currency
-gh megamerge dark-mode close       # when the last source has merged
+gh megamerge init dark-mode
 ```
 
-The target argument is the slug, the `megamerge/<slug>` branch, or the target
-PR's number — whichever is to hand. `add` and `remove` take a branch name or
-PR number; `add` defaults to the current branch. `sync --dry-run` composes and
-reports without pushing.
+This creates `megamerge/dark-mode` from the repo's default branch (pass
+`--base` for another), pushes it, and opens the draft target PR. That PR's
+number is now stable for the project's life — share its link, or the deploy
+URL its branch gets, with whoever is following along.
+
+**2. Work exactly as you normally do.**
+
+Branch off the base, commit, push, open a PR for each slice of the project.
+Nothing about your branches or PRs changes; stacked branches are fine — open
+the child's PR against its parent branch, as you would anyway.
+
+**3. When a branch is ready to be seen, make it a source.**
+
+```sh
+git switch dark-mode-toggle   # or wherever the work lives
+gh megamerge dark-mode add
+```
+
+`add` takes the current branch by default (or pass a branch name or PR
+number). It checks the branch is pushed and has an open PR, applies any
+configured labels, records it in the target PR's body, and syncs — the target
+now contains it.
+
+**4. Keep the target current as you iterate.**
+
+After pushing more commits to any source:
+
+```sh
+gh megamerge dark-mode
+```
+
+The bare command is a sync: it recomposes `base + every open source` and
+pushes only if the result actually differs. If two sources conflict, it
+refuses and names the files, leaving the target as it was; fix the conflict on
+a source branch and sync again. `gh megamerge dark-mode status` shows every
+source, its PR's state, and whether the target is current;
+`sync --dry-run` reports what a sync would do without pushing.
+
+**5. Merge sources whenever they're approved.**
+
+Merge each source PR exactly as you normally would, in any order. The next
+sync notices, moves the source to the Merged section of the target PR's body,
+and — because the same code now arrives via the base — the composed tree is
+unchanged and nothing is pushed or redeployed. Anyone watching the target
+never sees the handover.
+
+**6. Close the project.**
+
+```sh
+gh megamerge dark-mode close
+```
+
+When the last source has merged, `close` closes the target PR and deletes its
+branch. The PR remains as a record: every source the project shipped, listed
+in its body. (`close` refuses while sources are still open, unless `--force`.)
+
+Everywhere a target is named, use whichever handle is closest: the slug, the
+target branch name, or the target PR's number. To pull a source back out of a
+project without closing its PR, `gh megamerge dark-mode remove <branch|pr>`.
 
 ## How it works
 
