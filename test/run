@@ -27,7 +27,7 @@ git add .
 git commit -qm base
 BASE_SHA=$(git rev-parse HEAD)
 
-layer() {
+branch() {
   git checkout -q -b "$1" "${4:-$BASE_SHA}"
   echo "$3" >"$2"
   git add .
@@ -35,94 +35,94 @@ layer() {
   git rev-parse HEAD
 }
 
-L1=$(layer l1 f1.txt one)
-L2=$(layer l2 f2.txt two)
-L3=$(layer l3 f3.txt three "$L1")
-C1=$(layer c1 s.txt alpha)
-C2=$(layer c2 s.txt beta)
+B1=$(branch b1 f1.txt one)
+B2=$(branch b2 f2.txt two)
+B3=$(branch b3 f3.txt three "$B1")
+C1=$(branch c1 s.txt alpha)
+C2=$(branch c2 s.txt beta)
 
-final=$(compose_layers "$BASE_SHA" "l1=$L1" "l2=$L2")
-check "compose merges two independent layers" \
+final=$(compose_sources "$BASE_SHA" "b1=$B1" "b2=$B2")
+check "compose merges two independent sources" \
   "$(git ls-tree --name-only "$final" | tr '\n' ' ')" \
   "a.txt f1.txt f2.txt s.txt "
 check "compose parents are base plus both tips" \
   "$(git rev-list --parents -n1 "$final" | cut -d' ' -f2-)" \
-  "$BASE_SHA $L1 $L2"
-check "compose commit message names the layers" \
+  "$BASE_SHA $B1 $B2"
+check "compose commit message names the sources" \
   "$(git log -1 --format=%s "$final")" \
-  "megamerge: base + l1, l2"
+  "megamerge: base + b1, b2"
 
-again=$(compose_layers "$BASE_SHA" "l1=$L1" "l2=$L2")
+again=$(compose_sources "$BASE_SHA" "b1=$B1" "b2=$B2")
 check "compose is deterministic on the tree" \
   "$(git rev-parse "$again^{tree}")" "$(git rev-parse "$final^{tree}")"
 
-stacked=$(compose_layers "$BASE_SHA" "l3=$L3" "l2=$L2")
+stacked=$(compose_sources "$BASE_SHA" "b3=$B3" "b2=$B2")
 check "a stacked tip brings its parent's changes" \
   "$(git ls-tree --name-only "$stacked" | tr '\n' ' ')" \
   "a.txt f1.txt f2.txt f3.txt s.txt "
 
-if out=$(compose_layers "$BASE_SHA" "c1=$C1" "c2=$C2" 2>&1 >/dev/null); then
-  bad "conflicting layers are refused"
+if out=$(compose_sources "$BASE_SHA" "c1=$C1" "c2=$C2" 2>&1 >/dev/null); then
+  bad "conflicting sources are refused"
 else
-  ok "conflicting layers are refused"
+  ok "conflicting sources are refused"
   case $out in
-    *"conflict merging c2"*s.txt*) ok "conflict report names the layer and file" ;;
-    *) bad "conflict report names the layer and file: got '$out'" ;;
+    *"conflict merging c2"*s.txt*) ok "conflict report names the source and file" ;;
+    *) bad "conflict report names the source and file: got '$out'" ;;
   esac
 fi
 
-empty=$(compose_layers "$BASE_SHA")
-check "no layers composes to the base tree" \
+empty=$(compose_sources "$BASE_SHA")
+check "no sources composes to the base tree" \
   "$(git rev-parse "$empty^{tree}")" "$(git rev-parse "$BASE_SHA^{tree}")"
-check "no layers still commits on top of base" \
+check "no sources still commits on top of base" \
   "$(git rev-list --parents -n1 "$empty" | cut -d' ' -f2-)" "$BASE_SHA"
 
-lines=$(printf 'l1\t%s\t10\tmain\nl3\t%s\t11\tl1\n' "$L1" "$L3")
-check "filter drops a layer contained in another" \
-  "$(filter_layers "$BASE_SHA" "$lines" 2>/dev/null | cut -f1 | tr '\n' ' ')" \
-  "l3 "
+lines=$(printf 'b1\t%s\t10\tmain\nb3\t%s\t11\tb1\n' "$B1" "$B3")
+check "filter drops a source contained in another" \
+  "$(filter_sources "$BASE_SHA" "$lines" 2>/dev/null | cut -f1 | tr '\n' ' ')" \
+  "b3 "
 
 lines=$(printf 'noop\t%s\t12\tmain\n' "$BASE_SHA")
-check "filter drops a layer already in base" \
-  "$(filter_layers "$BASE_SHA" "$lines" 2>/dev/null)" ""
+check "filter drops a source already in base" \
+  "$(filter_sources "$BASE_SHA" "$lines" 2>/dev/null)" ""
 
-lines=$(printf 'l1\t%s\t10\tmain\nl2\t%s\t13\tmain\n' "$L1" "$L2")
-check "filter keeps independent layers" \
-  "$(filter_layers "$BASE_SHA" "$lines" 2>/dev/null | cut -f1 | tr '\n' ' ')" \
-  "l1 l2 "
+lines=$(printf 'b1\t%s\t10\tmain\nb2\t%s\t13\tmain\n' "$B1" "$B2")
+check "filter keeps independent sources" \
+  "$(filter_sources "$BASE_SHA" "$lines" 2>/dev/null | cut -f1 | tr '\n' ' ')" \
+  "b1 b2 "
 
 BASE=main
-git update-ref refs/remotes/origin/l1 "$L1"
-lines=$(printf 'l1\t%s\t10\tmain\nl3\t%s\t11\tl1\n' "$L1" "$L3")
+git update-ref refs/remotes/origin/b1 "$B1"
+lines=$(printf 'b1\t%s\t10\tmain\nb3\t%s\t11\tb1\n' "$B1" "$B3")
 if (check_stacks "$lines") 2>/dev/null; then
   ok "a fresh stack passes the stale check"
 else
   bad "a fresh stack passes the stale check"
 fi
 
-L1B=$(layer l1b f1.txt one-reworked)
-git update-ref refs/remotes/origin/l1 "$L1B"
+B1R=$(branch b1r f1.txt one-reworked)
+git update-ref refs/remotes/origin/b1 "$B1R"
 if out=$( (check_stacks "$lines") 2>&1); then
   bad "a reworked parent fails the stale check"
 else
   case $out in
-    *"stale stack: l3"*) ok "a reworked parent fails the stale check" ;;
+    *"stale stack: b3"*) ok "a reworked parent fails the stale check" ;;
     *) bad "a reworked parent fails the stale check: got '$out'" ;;
   esac
 fi
 
 BODY="above the block
 $MARKER_START
-### Layers
+### Sources
 
 - \`carldaws/one\` (#101)
 - \`carldaws/two\` (#102)
 
-Composed by [gh-megamerge](url): \`main\` plus the layers above.
+Composed by [gh-megamerge](url): \`main\` plus the sources above.
 $MARKER_END
 below the block"
-check "layers parse out of the body block" \
-  "$(layers_from_body | tr '\n' ' ')" \
+check "sources parse out of the body block" \
+  "$(sources_from_body | tr '\n' ' ')" \
   "carldaws/one carldaws/two "
 
 SLUG=demo
@@ -137,8 +137,8 @@ got=$(printf '%s\n' "$BODY" | MEGAMERGE_BLOCK="$block" awk -v s="$MARKER_START" 
 ')
 check "block rewrite preserves surrounding body text" "$got" "$expected"
 BODY=$got
-check "rewritten block lists the new layer" \
-  "$(layers_from_body | tr '\n' ' ')" "carldaws/three "
+check "rewritten block lists the new source" \
+  "$(sources_from_body | tr '\n' ' ')" "carldaws/three "
 
 echo
 echo "$pass passed, $fail failed"

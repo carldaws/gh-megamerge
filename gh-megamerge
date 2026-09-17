@@ -10,25 +10,25 @@ note() { echo "$*" >&2; }
 
 usage() {
   cat <<'EOF'
-gh megamerge - one holding PR composed from many layer branches
+gh megamerge - keep one target branch merged from many source branches
 
 Usage:
-  gh megamerge init <slug> [--base <branch>]   create megamerge/<slug> and its draft holding PR
-  gh megamerge <target>                        sync: rebuild the holding branch from base + open layers
-  gh megamerge <target> add [<branch|pr>]      add a layer (default: current branch), then sync
-  gh megamerge <target> remove <branch|pr>     remove a layer, then sync
-  gh megamerge <target> status                 layers, their PRs, and whether the holding branch is current
+  gh megamerge init <slug> [--base <branch>]   create megamerge/<slug> and its draft target PR
+  gh megamerge <target>                        sync: rebuild the target from base + open sources
+  gh megamerge <target> add [<branch|pr>]      add a source (default: current branch), then sync
+  gh megamerge <target> remove <branch|pr>     remove a source, then sync
+  gh megamerge <target> status                 sources, their PRs, and whether the target is current
   gh megamerge <target> sync [--dry-run]       explicit sync; --dry-run composes but pushes nothing
-  gh megamerge <target> close [--force]        close the holding PR and delete its branch
+  gh megamerge <target> close [--force]        close the target PR and delete its branch
 
-<target> is the project slug, the megamerge/<slug> branch, or the holding PR number.
+<target> is the slug, the megamerge/<slug> branch, or the target PR's number.
 
 Per-repo config (git config):
-  megamerge.addLabels      comma-separated labels applied to each layer PR on add
-  megamerge.holdingLabels  comma-separated labels applied to the holding PR on init
+  megamerge.addLabels     comma-separated labels applied to each source PR on add
+  megamerge.targetLabels  comma-separated labels applied to the target PR on init
 
 Requires git >= 2.38 (merge-tree --write-tree). Nothing is ever checked out:
-the holding branch is composed with merge-tree/commit-tree and pushed by ref.
+the target is composed with merge-tree/commit-tree and pushed by ref.
 EOF
 }
 
@@ -56,34 +56,34 @@ resolve_target() {
   tsv=$(gh pr view "$num" --json number,headRefName,baseRefName,isDraft,state \
     -q '[(.number|tostring),.headRefName,.baseRefName,(.isDraft|tostring),.state]|@tsv') ||
     die "cannot read PR #$num"
-  IFS=$'\t' read -r HOLDING_PR HOLDING_BRANCH BASE _draft _state <<<"$tsv"
+  IFS=$'\t' read -r TARGET_PR TARGET_BRANCH BASE _draft _state <<<"$tsv"
   BODY=$(gh pr view "$num" --json body -q .body | tr -d '\r')
   [ "$_state" = OPEN ] || die "PR #$num is $_state"
-  [ "$_draft" = true ] || die "PR #$num is not a draft - not a holding PR"
+  [ "$_draft" = true ] || die "PR #$num is not a draft - not a megamerge target"
   printf '%s\n' "$BODY" | grep -qxF "$MARKER_START" ||
-    die "PR #$num has no megamerge block - not a holding PR (create one with 'gh megamerge init')"
+    die "PR #$num has no megamerge block - not a megamerge target (create one with 'gh megamerge init')"
   printf '%s\n' "$BODY" | grep -qxF "$MARKER_END" ||
     die "PR #$num's megamerge block has no end marker - restore it before continuing"
-  SLUG=${HOLDING_BRANCH#megamerge/}
+  SLUG=${TARGET_BRANCH#megamerge/}
 }
 
-layers_from_body() {
+sources_from_body() {
   printf '%s\n' "$BODY" |
     awk -v s="$MARKER_START" -v e="$MARKER_END" '$0==s{f=1;next} $0==e{f=0} f' |
     sed -n 's/^- `\([^`]*\)`.*/\1/p'
 }
 
-layer_pr_open() {
+source_pr_open() {
   gh pr list --head "$1" --state open --json number,baseRefName \
     -q 'if length==0 then empty else "\(.[0].number)\t\(.[0].baseRefName)" end'
 }
 
-# One line per still-open layer: branch<TAB>sha<TAB>pr<TAB>prbase.
-gather_layers() {
+# One line per still-open source: branch<TAB>sha<TAB>pr<TAB>prbase.
+gather_sources() {
   local br info num bref sha
-  layers_from_body | while IFS= read -r br; do
+  sources_from_body | while IFS= read -r br; do
     [ -n "$br" ] || continue
-    info=$(layer_pr_open "$br")
+    info=$(source_pr_open "$br")
     if [ -z "$info" ]; then
       note "dropping $br: PR merged or closed"
       continue
@@ -109,15 +109,15 @@ check_stacks() {
       git merge-base --is-ancestor "$psha" "$sha" ||
         die "stale stack: $br (PR #$num) is stacked on $bref but no longer contains its tip - rebase $br onto $bref"
     else
-      note "warning: PR #$num for $br targets $bref, which is neither $BASE nor a layer"
+      note "warning: PR #$num for $br has base $bref, which is neither $BASE nor a source"
     fi
   done <<EOF
 $lines
 EOF
 }
 
-# Merge tips only: drop layers contained in the base or in another layer.
-filter_layers() {
+# Merge tips only: drop sources contained in the base or in another source.
+filter_sources() {
   local base_sha=$1 lines=$2
   local brs=() shas=() rests=() br sha rest i=0 j n drop
   while IFS=$'\t' read -r br sha rest; do
@@ -157,9 +157,9 @@ EOF
   done
 }
 
-# Compose base + layers into one octopus commit. Prints its sha; on conflict
+# Compose base + sources into one octopus commit. Prints its sha; on conflict
 # reports to stderr and returns 1 without touching anything.
-compose_layers() {
+compose_sources() {
   local base_sha=$1
   shift
   local current=$base_sha names="" pargs="" entry name sha out rc tree n=0
@@ -187,24 +187,24 @@ compose_layers() {
   local tree_final
   tree_final=$(git rev-parse "$current^{tree}")
   if [ "$n" -eq 0 ]; then
-    git commit-tree "$tree_final" -p "$base_sha" -m "megamerge: ${BASE:-base} (no layers)"
+    git commit-tree "$tree_final" -p "$base_sha" -m "megamerge: ${BASE:-base} (no sources)"
   else
     git commit-tree "$tree_final" -p "$base_sha" $pargs -m "megamerge: ${BASE:-base} + $names"
   fi
 }
 
 render_block() {
-  printf '%s\n' "$MARKER_START" "### Layers" ""
+  printf '%s\n' "$MARKER_START" "### Sources" ""
   if [ $# -gt 0 ]; then
     local e
     for e in "$@"; do
       printf -- '- `%s` (#%s)\n' "${e%=*}" "${e##*=}"
     done
   else
-    printf '_No layers yet - add one with `gh megamerge %s add`._\n' "$SLUG"
+    printf '_No sources yet - add one with `gh megamerge %s add`._\n' "$SLUG"
   fi
   printf '\n'
-  printf 'Composed by [gh-megamerge](%s): `%s` plus the layers above, rebuilt by `gh megamerge %s`. Never merge this PR or commit to its branch.\n' \
+  printf 'Composed by [gh-megamerge](%s): `%s` plus the sources above, rebuilt by `gh megamerge %s`. Never merge this PR or commit to its branch.\n' \
     "$TOOL_URL" "$BASE" "$SLUG"
   printf '%s\n' "$MARKER_END"
 }
@@ -216,7 +216,7 @@ set_block() {
     $0==e {skip=0; next}
     skip!=1 {print}
   ')
-  printf '%s\n' "$out" | gh pr edit "$HOLDING_PR" --body-file - >/dev/null
+  printf '%s\n' "$out" | gh pr edit "$TARGET_PR" --body-file - >/dev/null
   BODY=$out
 }
 
@@ -260,38 +260,38 @@ cmd_sync() {
   local dry=$1 base_sha listed_count gathered kept pairs final
   git fetch origin --quiet
   base_sha=$(git rev-parse --quiet --verify "origin/$BASE^{commit}") || die "origin/$BASE not found"
-  listed_count=$(layers_from_body | grep -c . || true)
-  gathered=$(gather_layers)
+  listed_count=$(sources_from_body | grep -c . || true)
+  gathered=$(gather_sources)
   check_stacks "$gathered"
-  kept=$(filter_layers "$base_sha" "$gathered")
+  kept=$(filter_sources "$base_sha" "$gathered")
   pairs=$(pairs_from "$kept")
-  final=$(compose_layers "$base_sha" $pairs) || die "conflicts - $HOLDING_BRANCH left as it was"
+  final=$(compose_sources "$base_sha" $pairs) || die "conflicts - $TARGET_BRANCH left as it was"
   local open_count
   open_count=$(printf '%s\n' "$gathered" | grep -c . || true)
   if [ "$open_count" -ne "$listed_count" ] && [ -z "$dry" ]; then
     rewrite_block_from "$gathered"
   fi
-  local holding_sha new_tree remote_tree
-  holding_sha=$(git rev-parse --quiet --verify "origin/$HOLDING_BRANCH^{commit}") ||
-    die "origin/$HOLDING_BRANCH is gone - push it back or re-init"
+  local target_sha new_tree remote_tree
+  target_sha=$(git rev-parse --quiet --verify "origin/$TARGET_BRANCH^{commit}") ||
+    die "origin/$TARGET_BRANCH is gone - push it back or re-init"
   new_tree=$(git rev-parse "$final^{tree}")
-  remote_tree=$(git rev-parse "$holding_sha^{tree}")
+  remote_tree=$(git rev-parse "$target_sha^{tree}")
   if [ "$new_tree" = "$remote_tree" ]; then
-    echo "$HOLDING_BRANCH is up to date ($BASE + $open_count layers); nothing pushed"
+    echo "$TARGET_BRANCH is up to date ($BASE + $open_count sources); nothing pushed"
     return 0
   fi
   local tip_msg
-  tip_msg=$(git log -1 --format=%s "$holding_sha")
+  tip_msg=$(git log -1 --format=%s "$target_sha")
   case $tip_msg in
     megamerge:*) ;;
-    *) die "refusing to overwrite $HOLDING_BRANCH: its tip ('$tip_msg') was not made by megamerge - someone pushed real work there" ;;
+    *) die "refusing to overwrite $TARGET_BRANCH: its tip ('$tip_msg') was not made by megamerge - someone pushed real work there" ;;
   esac
   if [ -n "$dry" ]; then
-    echo "dry run: would push $BASE + $open_count layers to $HOLDING_BRANCH"
+    echo "dry run: would push $BASE + $open_count sources to $TARGET_BRANCH"
     return 0
   fi
-  git push --quiet --force-with-lease="$HOLDING_BRANCH:$holding_sha" origin "$final:refs/heads/$HOLDING_BRANCH"
-  echo "pushed $BASE + $open_count layers to $HOLDING_BRANCH"
+  git push --quiet --force-with-lease="$TARGET_BRANCH:$target_sha" origin "$final:refs/heads/$TARGET_BRANCH"
+  echo "pushed $BASE + $open_count sources to $TARGET_BRANCH"
 }
 
 cmd_add() {
@@ -305,9 +305,9 @@ cmd_add() {
   else
     branch=$ref
   fi
-  [ "$branch" != "$HOLDING_BRANCH" ] || die "$branch is the holding branch"
+  [ "$branch" != "$TARGET_BRANCH" ] || die "$branch is the target branch"
   [ "$branch" != "$BASE" ] || die "$branch is the base branch"
-  if layers_from_body | grep -qxF "$branch"; then die "$branch is already a layer"; fi
+  if sources_from_body | grep -qxF "$branch"; then die "$branch is already a source"; fi
   git fetch origin --quiet
   local remote_sha local_sha
   remote_sha=$(git rev-parse --quiet --verify "origin/$branch^{commit}") ||
@@ -317,20 +317,20 @@ cmd_add() {
       die "local $branch has commits origin/$branch lacks - push first"
   fi
   local info num bref
-  info=$(layer_pr_open "$branch")
+  info=$(source_pr_open "$branch")
   [ -n "$info" ] || die "no open PR with head $branch - open one first"
   num=${info%%$'\t'*}
   bref=${info#*$'\t'}
   if [ "$bref" != "$BASE" ]; then
-    if layers_from_body | grep -qxF "$bref"; then
-      note "$branch is stacked on layer $bref"
+    if sources_from_body | grep -qxF "$bref"; then
+      note "$branch is stacked on source $bref"
     else
-      note "warning: PR #$num targets $bref (not $BASE)"
+      note "warning: PR #$num's base is $bref (not $BASE)"
     fi
   fi
   apply_labels_config megamerge.addLabels "$num"
   local gathered
-  gathered=$(gather_layers)
+  gathered=$(gather_sources)
   gathered="$gathered
 $branch	$remote_sha	$num	$bref"
   rewrite_block_from "$gathered"
@@ -346,10 +346,10 @@ cmd_remove() {
   else
     branch=$ref
   fi
-  layers_from_body | grep -qxF "$branch" || die "$branch is not a layer of $SLUG"
+  sources_from_body | grep -qxF "$branch" || die "$branch is not a source of $SLUG"
   git fetch origin --quiet
   local gathered
-  gathered=$(gather_layers | awk -F'\t' -v b="$branch" '$1!=b')
+  gathered=$(gather_sources | awk -F'\t' -v b="$branch" '$1!=b')
   rewrite_block_from "$gathered"
   echo "removed $branch"
   cmd_sync ""
@@ -358,14 +358,14 @@ cmd_remove() {
 cmd_status() {
   git fetch origin --quiet
   echo "project:  $SLUG"
-  echo "holding:  $HOLDING_BRANCH (PR #$HOLDING_PR)"
+  echo "target:   $TARGET_BRANCH (PR #$TARGET_PR)"
   echo "base:     $BASE"
   local listed
-  listed=$(layers_from_body)
+  listed=$(sources_from_body)
   if [ -z "$listed" ]; then
-    echo "layers:   none"
+    echo "sources:  none"
   else
-    echo "layers:"
+    echo "sources:"
     local br line num state draft rd extra
     while IFS= read -r br; do
       [ -n "$br" ] || continue
@@ -382,20 +382,20 @@ EOF
   fi
   local base_sha gathered kept pairs final new_tree remote_tree
   base_sha=$(git rev-parse --quiet --verify "origin/$BASE^{commit}") || die "origin/$BASE not found"
-  gathered=$(gather_layers)
+  gathered=$(gather_sources)
   check_stacks "$gathered"
-  kept=$(filter_layers "$base_sha" "$gathered")
+  kept=$(filter_sources "$base_sha" "$gathered")
   pairs=$(pairs_from "$kept")
-  if final=$(compose_layers "$base_sha" $pairs); then
+  if final=$(compose_sources "$base_sha" $pairs); then
     new_tree=$(git rev-parse "$final^{tree}")
-    remote_tree=$(git rev-parse "origin/$HOLDING_BRANCH^{tree}")
+    remote_tree=$(git rev-parse "origin/$TARGET_BRANCH^{tree}")
     if [ "$new_tree" = "$remote_tree" ]; then
-      echo "holding:  up to date"
+      echo "target:   up to date"
     else
-      echo "holding:  STALE - run 'gh megamerge $SLUG'"
+      echo "target:   STALE - run 'gh megamerge $SLUG'"
     fi
   else
-    echo "holding:  CONFLICTS - see above"
+    echo "target:   CONFLICTS - see above"
   fi
 }
 
@@ -403,14 +403,14 @@ cmd_close() {
   local force=$1
   git fetch origin --quiet
   local gathered count
-  gathered=$(gather_layers)
+  gathered=$(gather_sources)
   count=$(printf '%s\n' "$gathered" | grep -c . || true)
   if [ "$count" -gt 0 ] && [ "$force" != --force ]; then
-    die "layers still open: $(printf '%s\n' "$gathered" | cut -f1 | tr '\n' ' ')- merge or remove them, or pass --force"
+    die "sources still open: $(printf '%s\n' "$gathered" | cut -f1 | tr '\n' ' ')- merge or remove them, or pass --force"
   fi
-  gh pr close "$HOLDING_PR" >/dev/null
-  git push --quiet origin --delete "$HOLDING_BRANCH"
-  echo "closed PR #$HOLDING_PR and deleted origin/$HOLDING_BRANCH"
+  gh pr close "$TARGET_PR" >/dev/null
+  git push --quiet origin --delete "$TARGET_BRANCH"
+  echo "closed PR #$TARGET_PR and deleted origin/$TARGET_BRANCH"
 }
 
 cmd_init() {
@@ -448,7 +448,7 @@ cmd_init() {
   local base_sha
   base_sha=$(git rev-parse --quiet --verify "origin/$base^{commit}") || die "origin/$base not found"
   local commit
-  commit=$(git commit-tree "$(git rev-parse "$base_sha^{tree}")" -p "$base_sha" -m "megamerge: $slug holding branch")
+  commit=$(git commit-tree "$(git rev-parse "$base_sha^{tree}")" -p "$base_sha" -m "megamerge: $slug target")
   git push --quiet origin "$commit:refs/heads/$branch"
   BASE=$base
   SLUG=$slug
@@ -456,9 +456,9 @@ cmd_init() {
   url=$(gh pr create --draft --base "$base" --head "$branch" \
     --title "Megamerge: $slug" --body "$(render_block)")
   num=${url##*/}
-  apply_labels_config megamerge.holdingLabels "$num"
-  echo "created $branch and holding PR: $url"
-  echo "next: gh megamerge $slug add   (from a ready layer branch)"
+  apply_labels_config megamerge.targetLabels "$num"
+  echo "created $branch and target PR: $url"
+  echo "next: gh megamerge $slug add   (from a ready source branch)"
 }
 
 main() {
