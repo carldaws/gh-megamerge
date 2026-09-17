@@ -118,15 +118,21 @@ $MARKER_START
 - \`carldaws/one\` (#101)
 - \`carldaws/two\` (#102)
 
-Composed by [gh-megamerge](url): \`main\` plus the sources above.
+### Merged
+
+- \`carldaws/done\` (#90)
+
+Do not merge this PR or commit to its branch.
 $MARKER_END
 below the block"
 check "sources parse out of the body block" \
   "$(sources_from_body | tr '\n' ' ')" \
   "carldaws/one carldaws/two "
+check "merged entries stay out of the source list" \
+  "$(merged_lines_from_body)" '- `carldaws/done` (#90)'
 
 SLUG=demo
-block=$(render_block "carldaws/three=103")
+block=$(render_block '- `carldaws/done` (#90)' "carldaws/three=103")
 expected="above the block
 $block
 below the block"
@@ -139,6 +145,12 @@ check "block rewrite preserves surrounding body text" "$got" "$expected"
 BODY=$got
 check "rewritten block lists the new source" \
   "$(sources_from_body | tr '\n' ' ')" "carldaws/three "
+check "rewritten block keeps the merged section" \
+  "$(merged_lines_from_body)" '- `carldaws/done` (#90)'
+case $(current_block) in
+  *"Do not merge this PR or commit to its branch"*"Generated with [megamerge]"*) ok "trailer warns first, then links the tool" ;;
+  *) bad "trailer warns first, then links the tool" ;;
+esac
 
 echo
 echo "$pass passed, $fail failed"

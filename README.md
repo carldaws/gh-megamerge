@@ -43,8 +43,9 @@ reports without pushing.
 ## How it works
 
 - The source list lives in a fenced block in the target PR's body. There is no
-  other state: any machine with `gh` auth can drive a project, and `sync`
-  drops sources whose PRs have merged or closed.
+  other state: any machine with `gh` auth can drive a project. When a source's
+  PR merges, `sync` moves it to a Merged section in the block, so the target PR
+  records the project's full history; a PR closed without merging is dropped.
 - Composition uses `git merge-tree --write-tree` and `commit-tree` — nothing
   is checked out, so your working tree is never touched and no source's code
   is executed. The result is one octopus commit whose parents are the base and

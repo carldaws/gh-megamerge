@@ -67,10 +67,22 @@ resolve_target() {
   SLUG=${TARGET_BRANCH#megamerge/}
 }
 
-sources_from_body() {
+block_lines() {
   printf '%s\n' "$BODY" |
-    awk -v s="$MARKER_START" -v e="$MARKER_END" '$0==s{f=1;next} $0==e{f=0} f' |
-    sed -n 's/^- `\([^`]*\)`.*/\1/p'
+    awk -v s="$MARKER_START" -v e="$MARKER_END" '$0==s{f=1;next} $0==e{f=0} f'
+}
+
+current_block() {
+  printf '%s\n' "$BODY" |
+    awk -v s="$MARKER_START" -v e="$MARKER_END" '$0==s{f=1} f{print} $0==e{f=0}'
+}
+
+sources_from_body() {
+  block_lines | awk '/^### /{sec=$0} sec=="### Sources"' | sed -n 's/^- `\([^`]*\)`.*/\1/p'
+}
+
+merged_lines_from_body() {
+  block_lines | awk '/^### /{sec=$0} sec=="### Merged" && /^- /'
 }
 
 source_pr_open() {
@@ -84,10 +96,7 @@ gather_sources() {
   sources_from_body | while IFS= read -r br; do
     [ -n "$br" ] || continue
     info=$(source_pr_open "$br")
-    if [ -z "$info" ]; then
-      note "dropping $br: PR merged or closed"
-      continue
-    fi
+    [ -n "$info" ] || continue
     num=${info%%$'\t'*}
     bref=${info#*$'\t'}
     sha=$(git rev-parse --quiet --verify "origin/$br^{commit}") ||
@@ -194,6 +203,8 @@ compose_sources() {
 }
 
 render_block() {
+  local merged=$1
+  shift
   printf '%s\n' "$MARKER_START" "### Sources" ""
   if [ $# -gt 0 ]; then
     local e
@@ -203,9 +214,14 @@ render_block() {
   else
     printf '_No sources yet - add one with `gh megamerge %s add`._\n' "$SLUG"
   fi
+  if [ -n "$merged" ]; then
+    printf '%s\n' "" "### Merged" "" "$merged"
+  fi
   printf '\n'
-  printf 'Composed by [gh-megamerge](%s): `%s` plus the sources above, rebuilt by `gh megamerge %s`. Never merge this PR or commit to its branch.\n' \
-    "$TOOL_URL" "$BASE" "$SLUG"
+  printf 'Do not merge this PR or commit to its branch - it is rebuilt as `%s` plus the sources above by `gh megamerge %s`.\n' \
+    "$BASE" "$SLUG"
+  printf '\n'
+  printf 'Generated with [megamerge](%s)\n' "$TOOL_URL"
   printf '%s\n' "$MARKER_END"
 }
 
@@ -221,7 +237,8 @@ set_block() {
 }
 
 rewrite_block_from() {
-  local lines=$1 entries=() br sha num rest i=0
+  local lines=$1 merged=$2 entries=() br sha num rest i=0
+  merged=$(printf '%s\n' "$merged" | sed '/^$/d')
   while IFS=$'\t' read -r br sha num rest; do
     [ -n "$br" ] || continue
     entries[$i]="$br=$num"
@@ -229,7 +246,9 @@ rewrite_block_from() {
   done <<EOF
 $lines
 EOF
-  set_block "$(render_block "${entries[@]}")"
+  local new
+  new=$(render_block "$merged" "${entries[@]}")
+  if [ "$new" != "$(current_block)" ]; then set_block "$new"; fi
 }
 
 apply_labels_config() {
@@ -257,20 +276,36 @@ EOF
 }
 
 cmd_sync() {
-  local dry=$1 base_sha listed_count gathered kept pairs final
+  local dry=$1 base_sha gathered kept pairs final
   git fetch origin --quiet
   base_sha=$(git rev-parse --quiet --verify "origin/$BASE^{commit}") || die "origin/$BASE not found"
-  listed_count=$(sources_from_body | grep -c . || true)
   gathered=$(gather_sources)
   check_stacks "$gathered"
   kept=$(filter_sources "$base_sha" "$gathered")
   pairs=$(pairs_from "$kept")
   final=$(compose_sources "$base_sha" $pairs) || die "conflicts - $TARGET_BRANCH left as it was"
+  local merged_lines br mnum
+  merged_lines=$(merged_lines_from_body)
+  while IFS= read -r br; do
+    [ -n "$br" ] || continue
+    printf '%s\n' "$gathered" | cut -f1 | grep -qxF "$br" && continue
+    mnum=$(gh pr list --head "$br" --state merged --limit 1 --json number \
+      -q 'if length==0 then empty else .[0].number end')
+    if [ -n "$mnum" ]; then
+      note "source merged: $br (PR #$mnum)"
+      merged_lines="$merged_lines
+- \`$br\` (#$mnum)"
+    else
+      note "dropping $br: PR closed without merging"
+    fi
+  done <<EOF
+$(sources_from_body)
+EOF
+  if [ -z "$dry" ]; then
+    rewrite_block_from "$gathered" "$merged_lines"
+  fi
   local open_count
   open_count=$(printf '%s\n' "$gathered" | grep -c . || true)
-  if [ "$open_count" -ne "$listed_count" ] && [ -z "$dry" ]; then
-    rewrite_block_from "$gathered"
-  fi
   local target_sha new_tree remote_tree
   target_sha=$(git rev-parse --quiet --verify "origin/$TARGET_BRANCH^{commit}") ||
     die "origin/$TARGET_BRANCH is gone - push it back or re-init"
@@ -329,11 +364,12 @@ cmd_add() {
     fi
   fi
   apply_labels_config megamerge.addLabels "$num"
-  local gathered
+  local gathered merged
   gathered=$(gather_sources)
   gathered="$gathered
 $branch	$remote_sha	$num	$bref"
-  rewrite_block_from "$gathered"
+  merged=$(merged_lines_from_body | grep -vF "\`$branch\`" || true)
+  rewrite_block_from "$gathered" "$merged"
   echo "added $branch (PR #$num)"
   cmd_sync ""
 }
@@ -350,7 +386,7 @@ cmd_remove() {
   git fetch origin --quiet
   local gathered
   gathered=$(gather_sources | awk -F'\t' -v b="$branch" '$1!=b')
-  rewrite_block_from "$gathered"
+  rewrite_block_from "$gathered" "$(merged_lines_from_body)"
   echo "removed $branch"
   cmd_sync ""
 }
@@ -374,11 +410,17 @@ cmd_status() {
       IFS=$'\t' read -r num state draft rd <<<"$line"
       extra=""
       if [ "$draft" = true ]; then extra=" draft"; fi
-      if [ "$state" = MERGED ]; then extra="$extra (drops on next sync)"; fi
+      if [ "$state" = MERGED ]; then extra="$extra (moves to Merged on next sync)"; fi
       printf '  %-42s #%-6s %-8s %s%s\n' "$br" "$num" "$state" "$rd" "$extra"
     done <<EOF
 $listed
 EOF
+  fi
+  local mlines
+  mlines=$(merged_lines_from_body)
+  if [ -n "$mlines" ]; then
+    echo "merged:"
+    printf '%s\n' "$mlines" | sed 's/^- `\(.*\)` (\(.*\))$/  \1 \2/'
   fi
   local base_sha gathered kept pairs final new_tree remote_tree
   base_sha=$(git rev-parse --quiet --verify "origin/$BASE^{commit}") || die "origin/$BASE not found"
@@ -454,7 +496,7 @@ cmd_init() {
   SLUG=$slug
   local url num
   url=$(gh pr create --draft --base "$base" --head "$branch" \
-    --title "Megamerge: $slug" --body "$(render_block)")
+    --title "Megamerge: $slug" --body "$(render_block "")")
   num=${url##*/}
   apply_labels_config megamerge.targetLabels "$num"
   echo "created $branch and target PR: $url"
