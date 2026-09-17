@@ -28,11 +28,11 @@ Requires git ≥ 2.38 (`merge-tree --write-tree`).
 ## Usage
 
 ```sh
-gh megamerge init command-centre        # creates megamerge/command-centre + its draft target PR
-gh megamerge command-centre add         # current branch becomes a source, then syncs
-gh megamerge command-centre             # sync: rebuild the target from base + open sources
-gh megamerge command-centre status      # sources, their PRs, target currency
-gh megamerge command-centre close       # when the last source has merged
+gh megamerge init dark-mode        # creates megamerge/dark-mode + its draft target PR
+gh megamerge dark-mode add         # current branch becomes a source, then syncs
+gh megamerge dark-mode             # sync: rebuild the target from base + open sources
+gh megamerge dark-mode status      # sources, their PRs, target currency
+gh megamerge dark-mode close       # when the last source has merged
 ```
 
 The target argument is the slug, the `megamerge/<slug>` branch, or the target
@@ -69,12 +69,14 @@ error, not an incident.
 ## Per-repo config
 
 ```sh
-git config megamerge.addLabels "No Review App"   # applied to each source PR on add
-git config megamerge.targetLabels "Persist DB"   # applied to the target PR on init
+git config megamerge.addLabels "skip-preview"    # applied to each source PR on add
+git config megamerge.targetLabels "keep-data"    # applied to the target PR on init
 ```
 
-Both are comma-separated label lists, useful where labels steer your deploy
-pipeline.
+Both are comma-separated label lists, useful where PR labels steer a deploy
+pipeline — for example, suppressing per-source preview deploys so a project
+costs one deployment rather than one per PR, or marking the target's
+deployment as long-lived.
 
 ## Conventions
 
