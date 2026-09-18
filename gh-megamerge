@@ -23,6 +23,9 @@ Usage:
 
 <target> is the slug, the target branch, or the target PR's number.
 
+Optional alias, so commands read gh mm <target> ...:
+  gh alias set mm megamerge
+
 Per-repo config (git config):
   megamerge.branchPrefix  target branch prefix, so targets are <prefix>/<slug> (default: megamerge)
   megamerge.addLabels     comma-separated labels applied to each source PR on add
