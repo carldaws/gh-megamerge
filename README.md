@@ -144,6 +144,25 @@ deployment as long-lived.
 - Where someone is watching a deploy of the target, add sources when they are
   ready for review, so nobody sees work mid-construction.
 
+## Working with agents
+
+If a coding agent works in your repo, a few lines in `AGENTS.md` or
+`CLAUDE.md` are enough for it to use megamerge well:
+
+```markdown
+## Megamerge
+
+`gh megamerge` (alias `gh mm`) keeps one target branch merged from many
+source branches, each an ordinary PR. Docs: `gh megamerge --help`.
+
+- Use it for project-shaped work only: several related PRs shipping over
+  time that should be visible and runnable together. A single branch with
+  a single PR never needs it. If unsure which you're looking at, ask me.
+- When a project is underway: `gh mm <target> add` a branch only when
+  it's ready to be seen, sync after pushing to a source branch, and never
+  commit to the target branch or merge its PR.
+```
+
 ## Tests
 
 ```sh
